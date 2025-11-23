@@ -2,14 +2,18 @@
 
 ## Project Overview
 
-Android video downloader application with:
-- **ytdlp-cpp**: C++17 video extraction library (from Downloader_Multi)
+Pure C++ Android video downloader application with:
+- **SDL3**: Cross-platform window/input management (from submodule)
+- **ytdlp-cpp**: C++17 video extraction library
 - **Vulkan**: Native GPU-accelerated UI rendering
-- **SDL3**: Cross-platform window/input management (optional)
+- **Minimal Java**: Only SDL3's SDLActivity (single file)
 
 ## Quick Commands
 
 ```bash
+# Initialize submodules (required after clone)
+git submodule update --init --recursive
+
 # Build debug APK
 ./gradlew assembleDebug
 
@@ -18,9 +22,6 @@ Android video downloader application with:
 
 # Clean build
 ./gradlew clean
-
-# Run tests
-./gradlew test
 ```
 
 ## Project Structure
@@ -28,11 +29,10 @@ Android video downloader application with:
 ```
 app/src/main/
 ├── java/io/nava/downloader_multi/
-│   └── MainActivity.java       # Main activity with JNI bindings
+│   └── MainActivity.java       # Minimal - extends SDLActivity
 ├── cpp/
 │   ├── CMakeLists.txt          # Native build configuration
-│   ├── native-lib.cpp          # Basic JNI functions
-│   ├── jni_bridge.cpp          # Full JNI bridge
+│   ├── main.cpp                # SDL3 main entry point (SDL_main)
 │   ├── app/
 │   │   ├── downloader_app.hpp/cpp  # Main app class
 │   │   └── video_manager.hpp/cpp   # Download management
@@ -42,7 +42,8 @@ app/src/main/
 │   ├── ytdlp/                      # ytdlp-cpp library
 │   │   ├── include/ytdlp/          # Public headers
 │   │   └── src/                    # Implementation
-│   └── extern/                     # Dependencies
+│   └── extern/                     # Git submodules
+│       ├── SDL3/                   # SDL3 (window/input/audio)
 │       ├── fmt/                    # String formatting
 │       ├── spdlog/                 # Logging
 │       └── json/                   # JSON parsing
@@ -51,12 +52,17 @@ app/src/main/
 
 ## Key Components
 
+### SDL3 Entry Point (main.cpp)
+- Uses `SDL_main()` as entry point
+- Creates window with Vulkan support
+- Handles event loop and input
+- Manages application lifecycle
+
 ### ytdlp-cpp Library
 - Namespace: `ytdlp::`
 - Core: `ytdlp::core::YoutubeDL`, `ytdlp::core::InfoDict`
 - Extractors: `ytdlp::extractor::ZoomIE` (production-ready)
 - Networking: `ytdlp::networking::CurlHttpClient`
-- Utils: `ytdlp::utils::string_utils`, `json_utils`, etc.
 
 ### Vulkan Renderer
 - Namespace: `downloader::vulkan::`
@@ -68,44 +74,28 @@ app/src/main/
 - Main class: `DownloaderApp`
 - Download management: `VideoManager`
 
-## Adding New Extractors
+## Git Submodules
 
-1. Create header in `ytdlp/include/ytdlp/extractor/`
-2. Create implementation in `ytdlp/src/extractor/`
-3. Add to `CMakeLists.txt` YTDLP_SOURCES
-4. Register in `DownloaderApp::is_url_supported()`
-
-## Dependencies
-
-### Header-only (bundled)
-- fmt (FMT_HEADER_ONLY)
-- spdlog (SPDLOG_HEADER_ONLY)
-- nlohmann/json
-
-### System (need prebuilts for Android)
-- libcurl - HTTP client
-- OpenSSL - SSL/crypto
+| Submodule | Path | Purpose |
+|-----------|------|---------|
+| SDL3 | `extern/SDL3` | Window/input/audio |
+| fmt | `extern/fmt` | String formatting (header-only) |
+| spdlog | `extern/spdlog` | Logging (header-only) |
+| json | `extern/json` | JSON parsing (header-only) |
 
 ## Build Flags
 
 | Flag | Description |
 |------|-------------|
 | `DOWNLOADER_USE_VULKAN` | Enable Vulkan renderer |
-| `DOWNLOADER_USE_SDL3` | Enable SDL3 integration |
+| `DOWNLOADER_USE_SDL3` | Enable SDL3 (always ON) |
 | `YTDLP_NO_CURL` | Stub curl (no networking) |
 | `YTDLP_NO_OPENSSL` | Stub OpenSSL (no crypto) |
-
-## JNI Interface
-
-Key native methods in `MainActivity.java`:
-- `nativeInit()` - Initialize app
-- `extractVideoInfo()` - Extract video metadata
-- `startDownload()` - Begin download
-- `nativeInitVulkan()` - Initialize renderer
 
 ## Code Style
 
 - C++17 standard
+- Pure C++ application logic
 - RAII for resource management
 - Smart pointers (`std::unique_ptr`, `std::shared_ptr`)
-- Android logging macros: `LOGI`, `LOGE`, `LOGD`
+- Android logging: `LOGI`, `LOGE`, `LOGD` macros

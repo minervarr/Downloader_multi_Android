@@ -10,16 +10,15 @@ android {
 
     defaultConfig {
         applicationId "io.nava.downloader_multi"
-        minSdk 31
+        minSdk 24  // SDL3 requires API 24+
         targetSdk 36
         versionCode 1
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        // NDK configuration
+        // NDK configuration - all ABIs
         ndk {
-            // Target all common Android ABIs
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
         }
 
@@ -28,7 +27,9 @@ android {
                 cppFlags '-std=c++17 -frtti -fexceptions'
                 arguments '-DANDROID_STL=c++_shared',
                           '-DDOWNLOADER_USE_VULKAN=ON',
-                          '-DDOWNLOADER_USE_SDL3=ON'
+                          '-DDOWNLOADER_USE_SDL3=ON',
+                          '-DSDL_SHARED=OFF',
+                          '-DSDL_STATIC=ON'
             }
         }
     }
@@ -67,7 +68,14 @@ android {
     }
 
     buildFeatures {
-        viewBinding true
+        viewBinding false  // Not needed for SDL3
+    }
+
+    // SDL3 specific: include SDL Java sources
+    sourceSets {
+        main {
+            java.srcDirs += ['src/main/cpp/extern/SDL3/android-project/app/src/main/java']
+        }
     }
 
     // Packaging options for native libraries
@@ -79,9 +87,8 @@ android {
 }
 
 dependencies {
+    // Minimal dependencies for SDL3
     implementation libs.appcompat
-    implementation libs.material
-    implementation libs.constraintlayout
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

@@ -1,0 +1,12 @@
+[submodule "app/src/main/cpp/extern/SDL3"]
+	path = app/src/main/cpp/extern/SDL3
+	url = https://github.com/libsdl-org/SDL.git
+[submodule "app/src/main/cpp/extern/fmt"]
+	path = app/src/main/cpp/extern/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "app/src/main/cpp/extern/spdlog"]
+	path = app/src/main/cpp/extern/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "app/src/main/cpp/extern/json"]
+	path = app/src/main/cpp/extern/json
+	url = https://github.com/nlohmann/json.git

@@ -1,6 +1,6 @@
 # =============================================================================
 # Downloader Multi - Android NDK Build Configuration
-# SDL3 + Vulkan + ytdlp-cpp Integration
+# Pure C++ with SDL3 + Vulkan + ytdlp-cpp (minimal Java)
 # =============================================================================
 
 cmake_minimum_required(VERSION 3.22.1)
@@ -13,9 +13,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Android-specific settings
-set(CMAKE_ANDROID_STL_TYPE c++_shared)
-
 # =============================================================================
 # Build Options
 # =============================================================================
@@ -25,7 +22,7 @@ option(DOWNLOADER_BUILD_TESTS "Build tests" OFF)
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic)
+    add_compile_options(-Wall -Wextra)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-g -O0)
     else()
@@ -41,11 +38,33 @@ message(STATUS "  Android NDK: ${ANDROID_NDK}")
 message(STATUS "")
 
 # =============================================================================
-# External Dependencies (Header-only for Android)
+# SDL3 (from submodule - must be first for Android)
 # =============================================================================
-message(STATUS "=== Configuring Dependencies ===")
+message(STATUS "=== SDL3 Configuration ===")
 
-# fmt - Header only mode for Android
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/SDL3/CMakeLists.txt")
+    # Configure SDL3 for Android
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_VULKAN ON CACHE BOOL "" FORCE)
+    set(SDL_RENDER_VULKAN ON CACHE BOOL "" FORCE)
+    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+
+    add_subdirectory(extern/SDL3)
+    set(HAVE_SDL3 TRUE)
+    message(STATUS "  [OK] SDL3 configured from submodule")
+else()
+    message(FATAL_ERROR "SDL3 submodule not found! Run: git submodule update --init --recursive")
+endif()
+
+# =============================================================================
+# External Dependencies (Header-only from submodules)
+# =============================================================================
+message(STATUS "")
+message(STATUS "=== External Dependencies (Submodules) ===")
+
+# fmt - Header only mode
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/fmt/include")
     add_library(fmt INTERFACE)
     target_include_directories(fmt INTERFACE
@@ -53,12 +72,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/fmt/include")
     )
     target_compile_definitions(fmt INTERFACE FMT_HEADER_ONLY=1)
     add_library(fmt::fmt ALIAS fmt)
-    message(STATUS "  [OK] fmt (header-only)")
+    message(STATUS "  [OK] fmt (submodule, header-only)")
 else()
-    message(STATUS "  [SKIP] fmt - will use bundled or fetch")
+    message(FATAL_ERROR "fmt submodule not found! Run: git submodule update --init --recursive")
 endif()
 
-# spdlog - Header only mode for Android
+# spdlog - Header only mode
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/spdlog/include")
     add_library(spdlog INTERFACE)
     target_include_directories(spdlog INTERFACE
@@ -68,13 +87,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/spdlog/include")
         SPDLOG_HEADER_ONLY=1
         SPDLOG_FMT_EXTERNAL=1
     )
-    if(TARGET fmt::fmt)
-        target_link_libraries(spdlog INTERFACE fmt::fmt)
-    endif()
+    target_link_libraries(spdlog INTERFACE fmt::fmt)
     add_library(spdlog::spdlog ALIAS spdlog)
-    message(STATUS "  [OK] spdlog (header-only)")
+    message(STATUS "  [OK] spdlog (submodule, header-only)")
 else()
-    message(STATUS "  [SKIP] spdlog - will use bundled or fetch")
+    message(FATAL_ERROR "spdlog submodule not found! Run: git submodule update --init --recursive")
 endif()
 
 # nlohmann/json - Header only
@@ -84,17 +101,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/json/include")
         ${CMAKE_CURRENT_SOURCE_DIR}/extern/json/include
     )
     add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
-    message(STATUS "  [OK] nlohmann_json (header-only)")
+    message(STATUS "  [OK] nlohmann_json (submodule, header-only)")
 else()
-    message(STATUS "  [SKIP] nlohmann_json - will use bundled or fetch")
+    message(FATAL_ERROR "nlohmann_json submodule not found! Run: git submodule update --init --recursive")
 endif()
 
 # =============================================================================
-# Prebuilt Libraries for Android (curl, openssl)
+# Prebuilt Libraries (curl, openssl) - Optional
 # =============================================================================
+message(STATUS "")
+message(STATUS "=== Optional Prebuilt Libraries ===")
 
 # Check for prebuilt curl
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/curl/${ANDROID_ABI}")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/curl/${ANDROID_ABI}/libcurl.so")
     add_library(curl_imported SHARED IMPORTED)
     set_target_properties(curl_imported PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/extern/curl/${ANDROID_ABI}/libcurl.so"
@@ -106,12 +125,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/curl/${ANDROID_ABI}")
     message(STATUS "  [OK] curl (prebuilt for ${ANDROID_ABI})")
     set(HAVE_CURL TRUE)
 else()
-    message(STATUS "  [STUB] curl - using stub implementation")
+    message(STATUS "  [STUB] curl - networking disabled")
     set(HAVE_CURL FALSE)
 endif()
 
 # Check for prebuilt openssl
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/openssl/${ANDROID_ABI}")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/openssl/${ANDROID_ABI}/libssl.so")
     add_library(ssl_imported SHARED IMPORTED)
     set_target_properties(ssl_imported PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/extern/openssl/${ANDROID_ABI}/libssl.so"
@@ -128,7 +147,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/openssl/${ANDROID_ABI}")
     message(STATUS "  [OK] openssl (prebuilt for ${ANDROID_ABI})")
     set(HAVE_OPENSSL TRUE)
 else()
-    message(STATUS "  [STUB] openssl - using stub implementation")
+    message(STATUS "  [STUB] openssl - crypto disabled")
     set(HAVE_OPENSSL FALSE)
 endif()
 
@@ -136,7 +155,7 @@ endif()
 # ytdlp-cpp Library (Video Extraction)
 # =============================================================================
 message(STATUS "")
-message(STATUS "=== Building ytdlp-cpp Library ===")
+message(STATUS "=== ytdlp-cpp Library ===")
 
 set(YTDLP_SOURCES
     ytdlp/src/core/youtube_dl.cpp
@@ -165,25 +184,18 @@ target_include_directories(ytdlp_static
         ${CMAKE_CURRENT_SOURCE_DIR}/ytdlp/include
 )
 
-target_compile_definitions(ytdlp_static PRIVATE
-    YTDLP_ANDROID=1
-)
+target_compile_definitions(ytdlp_static PRIVATE YTDLP_ANDROID=1)
 
-# Link dependencies (use stubs if prebuilts not available)
-if(TARGET fmt::fmt)
-    target_link_libraries(ytdlp_static PUBLIC fmt::fmt)
-endif()
-if(TARGET spdlog::spdlog)
-    target_link_libraries(ytdlp_static PUBLIC spdlog::spdlog)
-endif()
-if(TARGET nlohmann_json::nlohmann_json)
-    target_link_libraries(ytdlp_static PUBLIC nlohmann_json::nlohmann_json)
-endif()
+# Link header-only dependencies
+target_link_libraries(ytdlp_static PUBLIC fmt::fmt spdlog::spdlog nlohmann_json::nlohmann_json)
+
+# Link curl/openssl if available
 if(HAVE_CURL)
     target_link_libraries(ytdlp_static PUBLIC CURL::libcurl)
 else()
     target_compile_definitions(ytdlp_static PRIVATE YTDLP_NO_CURL=1)
 endif()
+
 if(HAVE_OPENSSL)
     target_link_libraries(ytdlp_static PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 else()
@@ -203,7 +215,7 @@ message(STATUS "  [OK] ytdlp_static library")
 # =============================================================================
 if(DOWNLOADER_USE_VULKAN)
     message(STATUS "")
-    message(STATUS "=== Building Vulkan Renderer ===")
+    message(STATUS "=== Vulkan Renderer ===")
 
     set(VULKAN_SOURCES
         vulkan/vulkan_renderer.cpp
@@ -223,7 +235,7 @@ if(DOWNLOADER_USE_VULKAN)
     find_library(VULKAN_LIB vulkan)
     if(VULKAN_LIB)
         target_link_libraries(vulkan_renderer PUBLIC ${VULKAN_LIB})
-        message(STATUS "  [OK] Vulkan library found: ${VULKAN_LIB}")
+        message(STATUS "  [OK] Vulkan: ${VULKAN_LIB}")
     else()
         message(WARNING "  [WARN] Vulkan library not found")
     endif()
@@ -233,39 +245,18 @@ if(DOWNLOADER_USE_VULKAN)
 endif()
 
 # =============================================================================
-# SDL3 Integration
-# =============================================================================
-if(DOWNLOADER_USE_SDL3)
-    message(STATUS "")
-    message(STATUS "=== SDL3 Integration ===")
-
-    # SDL3 source directory (to be populated)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdl3/CMakeLists.txt")
-        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-        set(SDL_STATIC ON CACHE BOOL "" FORCE)
-        set(SDL_VULKAN ON CACHE BOOL "" FORCE)
-        add_subdirectory(sdl3)
-        set(HAVE_SDL3 TRUE)
-        message(STATUS "  [OK] SDL3 configured")
-    else()
-        message(STATUS "  [SKIP] SDL3 - source not found, using stub")
-        set(HAVE_SDL3 FALSE)
-    endif()
-endif()
-
-# =============================================================================
-# Main Application Library
+# Main Application (Pure C++ with SDL3)
 # =============================================================================
 message(STATUS "")
-message(STATUS "=== Building Main Application ===")
+message(STATUS "=== Main Application ===")
 
 set(APP_SOURCES
-    native-lib.cpp
-    jni_bridge.cpp
+    main.cpp
     app/downloader_app.cpp
     app/video_manager.cpp
 )
 
+# Create shared library (SDL3 handles the entry point)
 add_library(${CMAKE_PROJECT_NAME} SHARED ${APP_SOURCES})
 
 target_include_directories(${CMAKE_PROJECT_NAME}
@@ -274,9 +265,19 @@ target_include_directories(${CMAKE_PROJECT_NAME}
         ${CMAKE_CURRENT_SOURCE_DIR}/app
 )
 
+# Compile definitions
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+    DOWNLOADER_USE_SDL3=1
+)
+
+if(DOWNLOADER_USE_VULKAN)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE DOWNLOADER_USE_VULKAN=1)
+endif()
+
 # Link all components
 target_link_libraries(${CMAKE_PROJECT_NAME}
     PRIVATE
+        SDL3::SDL3-static
         ytdlp::ytdlp
         android
         log
@@ -284,15 +285,9 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
 if(DOWNLOADER_USE_VULKAN AND TARGET vulkan_renderer)
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE vulkan_renderer)
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE DOWNLOADER_USE_VULKAN=1)
 endif()
 
-if(HAVE_SDL3 AND TARGET SDL3::SDL3-static)
-    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE SDL3::SDL3-static)
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE DOWNLOADER_USE_SDL3=1)
-endif()
-
-message(STATUS "  [OK] ${CMAKE_PROJECT_NAME} shared library")
+message(STATUS "  [OK] ${CMAKE_PROJECT_NAME} (SDL3-based)")
 
 # =============================================================================
 # Summary
@@ -301,8 +296,9 @@ message(STATUS "")
 message(STATUS "=== Build Summary ===")
 message(STATUS "  Project:     ${CMAKE_PROJECT_NAME}")
 message(STATUS "  Version:     ${PROJECT_VERSION}")
+message(STATUS "  SDL3:        ON (submodule)")
 message(STATUS "  Vulkan:      ${DOWNLOADER_USE_VULKAN}")
-message(STATUS "  SDL3:        ${DOWNLOADER_USE_SDL3}")
 message(STATUS "  curl:        ${HAVE_CURL}")
 message(STATUS "  OpenSSL:     ${HAVE_OPENSSL}")
+message(STATUS "  C++ Std:     C++17")
 message(STATUS "")
