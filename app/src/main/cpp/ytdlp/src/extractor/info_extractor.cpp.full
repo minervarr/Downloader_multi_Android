@@ -1,0 +1,674 @@
+#include "ytdlp/extractor/info_extractor.hpp"
+#include "ytdlp/core/youtube_dl.hpp"
+#include "ytdlp/networking/curl_http_client.hpp"
+#include "ytdlp/networking/request.hpp"
+#include "ytdlp/networking/response.hpp"
+#include "ytdlp/utils/string_utils.hpp"
+#include "ytdlp/utils/json_utils.hpp"
+#include <stdexcept>
+#include <iostream>
+
+namespace ytdlp::extractor {
+
+InfoExtractor::InfoExtractor(core::YoutubeDL* downloader)
+    : downloader_(downloader) {
+}
+
+std::string InfoExtractor::ie_key() const {
+    return "InfoExtractor";
+}
+
+std::string InfoExtractor::ie_name() const {
+    return "Generic";
+}
+
+core::InfoDict InfoExtractor::extract(const std::string& url) {
+    try {
+        return _real_extract(url);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to extract from " + url + ": " + e.what());
+    }
+}
+
+void InfoExtractor::set_downloader(core::YoutubeDL* downloader) {
+    downloader_ = downloader;
+}
+
+std::string InfoExtractor::_download_webpage(
+    const std::string& url_or_request,
+    const std::string& video_id,
+    const std::optional<std::string>& note,
+    const std::optional<std::string>& errnote,
+    bool fatal
+) {
+    if (!downloader_) {
+        throw std::runtime_error("No downloader set for InfoExtractor");
+    }
+
+    if (note.has_value()) {
+        to_screen("[" + ie_key() + "] " + video_id + ": " + note.value());
+    }
+
+    try {
+        // Get HTTP client from downloader
+        auto& http_client = downloader_->http_client();
+
+        // Create GET request
+        networking::Request request(url_or_request);
+
+        // Execute request
+        auto response = http_client.execute(request);
+
+        // Check status code
+        if (!response.is_success()) {
+            std::string error_msg = "HTTP Error " + std::to_string(response.status());
+            if (errnote.has_value()) {
+                error_msg = errnote.value() + ": " + error_msg;
+            }
+
+            if (fatal) {
+                throw std::runtime_error(error_msg);
+            }
+
+            report_warning(error_msg, video_id);
+            return "";
+        }
+
+        return response.read_all();
+
+    } catch (const std::exception& e) {
+        std::string error_msg = std::string(e.what());
+        if (errnote.has_value()) {
+            error_msg = errnote.value() + ": " + error_msg;
+        }
+
+        if (fatal) {
+            throw std::runtime_error(error_msg);
+        }
+
+        report_warning(error_msg, video_id);
+        return "";
+    }
+}
+
+std::string InfoExtractor::_search_regex(
+    const std::string& pattern,
+    std::string_view string,
+    const std::string& name,
+    const std::optional<std::string>& default_value,
+    bool fatal,
+    std::regex_constants::syntax_option_type flags,
+    int group
+) const {
+    try {
+        std::regex re(pattern, flags);
+        std::match_results<std::string_view::const_iterator> match;
+
+        std::string str(string);  // Convert string_view to string for regex_search
+        std::smatch smatch;
+
+        if (std::regex_search(str, smatch, re)) {
+            if (group >= 0 && static_cast<size_t>(group) < smatch.size()) {
+                return smatch[group].str();
+            }
+        }
+
+        // Not found
+        if (default_value.has_value()) {
+            return default_value.value();
+        }
+
+        if (fatal) {
+            throw std::runtime_error("Unable to extract " + name);
+        }
+
+        return "";
+
+    } catch (const std::regex_error& e) {
+        throw std::runtime_error("Invalid regex pattern for " + name + ": " + e.what());
+    }
+}
+
+std::string InfoExtractor::_og_search_property(
+    const std::string& prop,
+    std::string_view html,
+    const std::optional<std::string>& name,
+    const std::optional<std::string>& default_value,
+    bool fatal
+) const {
+    // Search for Open Graph meta tags: <meta property="og:PROP" content="VALUE">
+    std::string pattern = R"(<meta[^>]+property=["\']og:)" + prop + R"(["\'][^>]+content=["\']([^"\']+)["\'])";
+
+    // Try property attribute first
+    std::string result = _search_regex(
+        pattern,
+        html,
+        name.value_or("og:" + prop),
+        std::nullopt,
+        false
+    );
+
+    if (!result.empty()) {
+        return utils::unescape_html(result);
+    }
+
+    // Try content then property order
+    pattern = R"(<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:)" + prop + R"(["\'])";
+    result = _search_regex(
+        pattern,
+        html,
+        name.value_or("og:" + prop),
+        default_value,
+        fatal
+    );
+
+    if (!result.empty()) {
+        return utils::unescape_html(result);
+    }
+
+    return default_value.value_or("");
+}
+
+std::string InfoExtractor::_html_search_meta(
+    const std::vector<std::string>& names,
+    std::string_view html,
+    const std::optional<std::string>& display_name,
+    const std::optional<std::string>& default_value,
+    bool fatal
+) const {
+    // Search for <meta name="NAME" content="VALUE"> or <meta property="NAME" content="VALUE">
+    for (const auto& name : names) {
+        // Try name attribute
+        std::string pattern = R"(<meta[^>]+name=["\'])" + name + R"(["\'][^>]+content=["\']([^"\']+)["\'])";
+        std::string result = _search_regex(pattern, html, name, std::nullopt, false);
+
+        if (!result.empty()) {
+            return utils::unescape_html(result);
+        }
+
+        // Try content then name order
+        pattern = R"(<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\'])" + name + R"(["\'])";
+        result = _search_regex(pattern, html, name, std::nullopt, false);
+
+        if (!result.empty()) {
+            return utils::unescape_html(result);
+        }
+
+        // Try property attribute
+        pattern = R"(<meta[^>]+property=["\'])" + name + R"(["\'][^>]+content=["\']([^"\']+)["\'])";
+        result = _search_regex(pattern, html, name, std::nullopt, false);
+
+        if (!result.empty()) {
+            return utils::unescape_html(result);
+        }
+    }
+
+    // Not found in any name
+    if (default_value.has_value()) {
+        return default_value.value();
+    }
+
+    if (fatal) {
+        std::string name_list = names.empty() ? "" : names[0];
+        throw std::runtime_error("Unable to extract " + display_name.value_or(name_list));
+    }
+
+    return "";
+}
+
+/* NOT NEEDED FOR ZOOM - COMMENTED OUT
+std::string InfoExtractor::_og_search_title(std::string_view html, bool fatal) const {
+    return _og_search_property("title", html, "og:title", std::nullopt, fatal);
+}
+
+std::string InfoExtractor::_og_search_description(std::string_view html, bool fatal) const {
+    return _og_search_property("description", html, "og:description", std::nullopt, fatal);
+}
+
+std::string InfoExtractor::_og_search_thumbnail(std::string_view html, bool fatal) const {
+    return _og_search_property("image", html, "og:image", std::nullopt, fatal);
+}
+
+std::string InfoExtractor::_html_extract_title(
+    std::string_view html,
+    const std::string& name,
+    bool fatal
+) const {
+    std::string title = _search_regex(
+        R"(<title[^>]*>([^<]+)</title>)",
+        html,
+        name,
+        std::nullopt,
+        fatal
+    );
+
+    if (!title.empty()) {
+        return utils::unescape_html(utils::strip(title));
+    }
+
+    return "";
+}
+
+void InfoExtractor::report_warning(const std::string& msg, const std::string& video_id) const {
+    if (downloader_) {
+        std::string full_msg = "[" + ie_key() + "] ";
+        if (!video_id.empty()) {
+            full_msg += video_id + ": ";
+        }
+        full_msg += msg;
+        downloader_->report_warning(full_msg);
+    } else {
+        std::cerr << "[warning] " << msg << std::endl;
+    }
+}
+
+void InfoExtractor::to_screen(const std::string& msg) const {
+    if (downloader_) {
+        downloader_->to_stdout(msg);
+    } else {
+        std::cout << msg << std::endl;
+    }
+}
+
+void InfoExtractor::write_debug(const std::string& msg) const {
+    if (downloader_) {
+        // YoutubeDL doesn't have write_debug yet, use to_stdout for now
+        downloader_->to_stdout("[debug] " + msg);
+    } else {
+        std::cout << "[debug] " << msg << std::endl;
+    }
+}
+
+void InfoExtractor::report_extraction(const std::string& video_id) const {
+    to_screen("[" + ie_key() + "] " + video_id + ": Extracting video information");
+}
+
+nlohmann::json InfoExtractor::_parse_json(
+    std::string_view json_string,
+    const std::string& video_id,
+    const std::optional<std::function<std::string(std::string_view)>>& transform_source,
+    bool fatal
+) const {
+    try {
+        // Apply transform if provided
+        std::string json_str(json_string);
+        if (transform_source.has_value()) {
+            json_str = transform_source.value()(json_string);
+        }
+
+        // Parse JSON
+        return nlohmann::json::parse(json_str);
+
+    } catch (const nlohmann::json::parse_error& e) {
+        std::string error_msg = "Failed to parse JSON";
+        if (!video_id.empty()) {
+            error_msg += " for " + video_id;
+        }
+        error_msg += ": " + std::string(e.what());
+
+        if (fatal) {
+            throw std::runtime_error(error_msg);
+        }
+
+        report_warning(error_msg, video_id);
+        return nlohmann::json();  // Return null JSON
+    }
+}
+
+size_t InfoExtractor::find_json_end(std::string_view text, size_t start_pos, char open_char, char close_char) const {
+    int depth = 1;
+    bool in_string = false;
+    bool escaped = false;
+
+    for (size_t i = start_pos; i < text.length(); ++i) {
+        char c = text[i];
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (c == '"') {
+            in_string = !in_string;
+            continue;
+        }
+
+        if (in_string) {
+            continue;
+        }
+
+        if (c == open_char) {
+            depth++;
+        } else if (c == close_char) {
+            depth--;
+            if (depth == 0) {
+                return i;
+            }
+        }
+    }
+
+    return std::string::npos;
+}
+
+nlohmann::json InfoExtractor::_search_json(
+    const std::string& start_pattern,
+    std::string_view string,
+    const std::string& name,
+    const std::string& video_id,
+    const std::string& end_pattern,
+    bool fatal
+) const {
+    try {
+        // Find start of JSON
+        std::regex start_re(start_pattern);
+        std::string str(string);
+        std::smatch match;
+
+        if (!std::regex_search(str, match, start_re)) {
+            if (fatal) {
+                throw std::runtime_error("Unable to find JSON start for " + name);
+            }
+            return nlohmann::json();
+        }
+
+        // Get position after the match
+        size_t json_start = match.position() + match.length();
+
+        // Skip whitespace
+        while (json_start < str.length() && std::isspace(str[json_start])) {
+            json_start++;
+        }
+
+        if (json_start >= str.length()) {
+            if (fatal) {
+                throw std::runtime_error("No JSON content found after pattern for " + name);
+            }
+            return nlohmann::json();
+        }
+
+        // Determine JSON type and find end
+        char first_char = str[json_start];
+        size_t json_end;
+
+        if (first_char == '{') {
+            json_end = find_json_end(str, json_start + 1, '{', '}');
+        } else if (first_char == '[') {
+            json_end = find_json_end(str, json_start + 1, '[', ']');
+        } else {
+            if (fatal) {
+                throw std::runtime_error("JSON does not start with { or [ for " + name);
+            }
+            return nlohmann::json();
+        }
+
+        if (json_end == std::string::npos) {
+            if (fatal) {
+                throw std::runtime_error("Unable to find JSON end for " + name);
+            }
+            return nlohmann::json();
+        }
+
+        // Extract and parse JSON
+        std::string json_str = str.substr(json_start, json_end - json_start + 1);
+        return _parse_json(json_str, video_id, std::nullopt, fatal);
+
+    } catch (const std::exception& e) {
+        if (fatal) {
+            throw;
+        }
+        report_warning(std::string(e.what()), video_id);
+        return nlohmann::json();
+    }
+}
+
+std::vector<nlohmann::json> InfoExtractor::_extract_json_ld(
+    std::string_view html,
+    const std::string& video_id,
+    bool fatal
+) const {
+    std::vector<nlohmann::json> results;
+
+    // Pattern to find JSON-LD script tags
+    // Use [\\s\\S] instead of . to match newlines
+    std::regex json_ld_pattern(
+        R"(<script[^>]*type\s*=\s*["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>)",
+        std::regex::icase | std::regex::ECMAScript
+    );
+
+    std::string html_str(html);
+    auto begin = std::sregex_iterator(html_str.begin(), html_str.end(), json_ld_pattern);
+    auto end = std::sregex_iterator();
+
+    bool found_any = false;
+
+    for (std::sregex_iterator i = begin; i != end; ++i) {
+        std::smatch match = *i;
+        std::string json_str = match[1].str();
+
+        // Parse the JSON
+        nlohmann::json parsed = _parse_json(json_str, video_id, std::nullopt, false);
+
+        if (!parsed.is_null()) {
+            found_any = true;
+
+            // JSON-LD can be a single object or an array
+            if (parsed.is_array()) {
+                for (const auto& item : parsed) {
+                    results.push_back(item);
+                }
+            } else {
+                results.push_back(parsed);
+            }
+        }
+    }
+
+    if (!found_any && fatal) {
+        throw std::runtime_error("No JSON-LD found in HTML for " + video_id);
+    }
+
+    return results;
+}
+
+core::InfoDict InfoExtractor::_search_json_ld(
+    std::string_view html,
+    const std::string& video_id,
+    const std::optional<std::string>& expected_type,
+    bool fatal
+) const {
+    auto json_lds = _extract_json_ld(html, video_id, fatal);
+
+    core::InfoDict info;
+
+    for (const auto& json_ld : json_lds) {
+        // Check type if specified
+        if (expected_type.has_value()) {
+            std::string type = utils::json::get_string(json_ld, "@type", "");
+            if (type != expected_type.value()) {
+                continue;
+            }
+        }
+
+        // Extract common video properties
+        if (json_ld.contains("name")) {
+            info["title"] = utils::json::get_string(json_ld, "name");
+        }
+
+        if (json_ld.contains("description")) {
+            info["description"] = utils::json::get_string(json_ld, "description");
+        }
+
+        if (json_ld.contains("thumbnailUrl")) {
+            auto thumb = json_ld["thumbnailUrl"];
+            if (thumb.is_string()) {
+                info["thumbnail"] = thumb.get<std::string>();
+            } else if (thumb.is_array() && !thumb.empty()) {
+                info["thumbnail"] = thumb[0].get<std::string>();
+            }
+        }
+
+        if (json_ld.contains("uploadDate")) {
+            info["upload_date"] = utils::json::get_string(json_ld, "uploadDate");
+        }
+
+        if (json_ld.contains("duration")) {
+            // Duration might be ISO 8601 format or seconds
+            auto duration = json_ld["duration"];
+            if (duration.is_string()) {
+                info["duration"] = duration.get<std::string>();
+            } else if (duration.is_number()) {
+                info["duration"] = duration.get<int>();
+            }
+        }
+
+        if (json_ld.contains("contentUrl")) {
+            info["url"] = utils::json::get_string(json_ld, "contentUrl");
+        }
+
+        // Extract uploader info
+        if (json_ld.contains("author")) {
+            auto author = json_ld["author"];
+            if (author.is_object() && author.contains("name")) {
+                info["uploader"] = utils::json::get_string(author, "name");
+            } else if (author.is_string()) {
+                info["uploader"] = author.get<std::string>();
+            }
+        }
+
+        // If we found relevant data, break (use first matching entry)
+        if (!info.empty()) {
+            break;
+        }
+    }
+
+    if (info.empty() && fatal && expected_type.has_value()) {
+        throw std::runtime_error("No matching JSON-LD of type " + expected_type.value() + " found for " + video_id);
+    }
+
+    return info;
+}
+
+nlohmann::json InfoExtractor::_download_json(
+    const std::string& url,
+    const std::string& video_id,
+    const std::optional<std::string>& note,
+    const std::optional<std::string>& errnote,
+    bool fatal,
+    const std::map<std::string, std::string>& query
+) {
+    // Build URL with query parameters
+    std::string full_url = url;
+    if (!query.empty()) {
+        std::string query_str;
+        for (const auto& [key, value] : query) {
+            if (!query_str.empty()) query_str += "&";
+            query_str += utils::url_encode(key) + "=" + utils::url_encode(value);
+        }
+        full_url += (url.find('?') == std::string::npos ? "?" : "&") + query_str;
+    }
+
+    // Download webpage
+    std::string json_text = _download_webpage(full_url, video_id, note, errnote, fatal);
+
+    if (json_text.empty()) {
+        return nlohmann::json();
+    }
+
+    // Parse JSON
+    try {
+        return nlohmann::json::parse(json_text);
+    } catch (const nlohmann::json::exception& e) {
+        std::string error_msg = "Failed to parse JSON for " + video_id + ": " + std::string(e.what());
+        if (fatal) {
+            throw std::runtime_error(error_msg);
+        }
+        report_warning(error_msg, video_id);
+        return nlohmann::json();
+    }
+}
+
+std::map<std::string, std::string> InfoExtractor::_form_hidden_inputs(
+    const std::string& form_id,
+    std::string_view html
+) const {
+    std::map<std::string, std::string> inputs;
+
+    // Find the form
+    std::string form_pattern = R"(<form[^>]+id\s*=\s*["\'])" + form_id + R"(["\'][^>]*>([\s\S]*?)</form>)";
+    std::string form_content = _search_regex(form_pattern, html, "form " + form_id, std::nullopt, false);
+
+    if (form_content.empty()) {
+        throw std::runtime_error("Form not found: " + form_id);
+    }
+
+    // Extract all input fields
+    std::regex input_pattern(R"(<input[^>]+type\s*=\s*["\']hidden["\'][^>]*>)", std::regex::icase);
+    std::string content_str(form_content);
+
+    auto begin = std::sregex_iterator(content_str.begin(), content_str.end(), input_pattern);
+    auto end = std::sregex_iterator();
+
+    for (std::sregex_iterator i = begin; i != end; ++i) {
+        std::string input_tag = (*i).str();
+
+        // Extract name attribute
+        std::regex name_re(R"(name\s*=\s*["\']([^"\']+)["\'])", std::regex::icase);
+        std::smatch name_match;
+        if (!std::regex_search(input_tag, name_match, name_re) || name_match.size() < 2) {
+            continue;
+        }
+        std::string name = name_match[1].str();
+
+        // Extract value attribute
+        std::regex value_re(R"(value\s*=\s*["\']([^"\']*)["\'])", std::regex::icase);
+        std::smatch value_match;
+        std::string value;
+        if (std::regex_search(input_tag, value_match, value_re) && value_match.size() >= 2) {
+            value = value_match[1].str();
+        }
+
+        inputs[name] = value;
+    }
+
+    // Also check for non-hidden inputs and other form fields
+    std::regex all_input_pattern(R"(<input[^>]+name\s*=\s*["\']([^"\']+)["\'][^>]*>)", std::regex::icase);
+    auto begin2 = std::sregex_iterator(content_str.begin(), content_str.end(), all_input_pattern);
+
+    for (std::sregex_iterator i = begin2; i != end; ++i) {
+        std::string input_tag = (*i).str();
+        std::smatch match = *i;
+
+        if (match.size() < 2) continue;
+        std::string name = match[1].str();
+
+        // Skip if already added
+        if (inputs.find(name) != inputs.end()) {
+            continue;
+        }
+
+        // Extract value
+        std::regex value_re(R"(value\s*=\s*["\']([^"\']*)["\'])", std::regex::icase);
+        std::smatch value_match;
+        std::string value;
+        if (std::regex_search(input_tag, value_match, value_re) && value_match.size() >= 2) {
+            value = value_match[1].str();
+        }
+
+        inputs[name] = value;
+    }
+
+    return inputs;
+}
+
+std::smatch InfoExtractor::_match_valid_url(const std::string& url) const {
+    // This is a virtual method that should be overridden by subclasses
+    // For the base class, we just return an empty match
+    std::smatch match;
+    return match;
+}
+
+} // namespace ytdlp::extractor
